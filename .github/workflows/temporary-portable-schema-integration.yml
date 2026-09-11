@@ -1,0 +1,99 @@
+name: Temporary portable schema integration
+
+on:
+  push:
+    branches:
+      - fix-go-portable-logical-types
+    paths-ignore:
+      - sdks/go/pkg/beam/core/runtime/graphx/schema/schema.go
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix-go-portable-logical-types
+          fetch-depth: 1
+
+      - name: Apply schema integration
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path("sdks/go/pkg/beam/core/runtime/graphx/schema/schema.go")
+          s = p.read_text()
+
+          old = '''func (r *Registry) logicalTypeToFieldType(t reflect.Type) (*pipepb.FieldType, string, error) {
+\t// Check if a logical type was registered that matches this struct type directly
+\t// and if so, extract the schema from it for use.
+\tif lID, ok := r.logicalTypeIdentifiers[t]; ok {'''
+          new = '''func (r *Registry) logicalTypeToFieldType(t reflect.Type) (*pipepb.FieldType, string, error) {
+\tif urn, ok := r.portableLogicalTypeIdentifiers[t]; ok {
+\t\tlt := r.portableLogicalTypes[urn]
+\t\treturn proto.Clone(lt.Representation()).(*pipepb.FieldType), urn, nil
+\t}
+\t// Check if a logical type was registered that matches this struct type directly
+\t// and if so, extract the schema from it for use.
+\tif lID, ok := r.logicalTypeIdentifiers[t]; ok {'''
+          if old not in s:
+              raise SystemExit("logicalTypeToFieldType anchor not found")
+          s = s.replace(old, new, 1)
+
+          old = '''\tif ftype != nil {
+\t\tschm := ftype.GetRowType().GetSchema()'''
+          new = '''\tif ftype != nil {
+\t\tif lt, ok := r.portableLogicalTypes[lID]; ok {
+\t\t\tlogical := &pipepb.LogicalType{
+\t\t\t\tUrn:            lID,
+\t\t\t\tRepresentation: ftype,
+\t\t\t\tArgumentType:   proto.Clone(lt.ArgumentType()).(*pipepb.FieldType),
+\t\t\t\tArgument:       proto.Clone(lt.Argument()).(*pipepb.FieldValue),
+\t\t\t}
+\t\t\treturn &pipepb.FieldType{TypeInfo: &pipepb.FieldType_LogicalType{LogicalType: logical}}, nil
+\t\t}
+\t\tschm := ftype.GetRowType().GetSchema()'''
+          if old not in s:
+              raise SystemExit("fromType anchor not found")
+          s = s.replace(old, new, 1)
+
+          old = '''\tcase *pipepb.FieldType_LogicalType:
+\t\tlst := sft.GetLogicalType()
+\t\tidentifier := lst.GetUrn()
+\t\tlt, ok := r.logicalTypes[identifier]
+\t\tif !ok {
+\t\t\treturn nil, errors.Errorf("unknown logical type: %v", identifier)
+\t\t}
+\t\tt = lt.GoType()'''
+          new = '''\tcase *pipepb.FieldType_LogicalType:
+\t\tlst := sft.GetLogicalType()
+\t\tidentifier := lst.GetUrn()
+\t\tif lt, ok := r.logicalTypes[identifier]; ok {
+\t\t\tt = lt.GoType()
+\t\t} else if lt, ok := r.portableLogicalTypes[identifier]; ok {
+\t\t\tt = lt.GoType()
+\t\t} else {
+\t\t\treturn nil, errors.Errorf("unknown logical type: %v", identifier)
+\t\t}'''
+          if old not in s:
+              raise SystemExit("logical deserialization anchor not found")
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+
+      - name: Format
+        run: |
+          cd sdks/go/pkg/beam
+          gofmt -w core/runtime/graphx/schema/schema.go
+
+      - name: Commit schema integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sdks/go/pkg/beam/core/runtime/graphx/schema/schema.go
+          git diff --cached --quiet && exit 0
+          git commit -m "[BEAM-39684] Integrate portable logical types into schema conversion"
+          git push origin HEAD:fix-go-portable-logical-types

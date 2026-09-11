@@ -22,7 +22,7 @@ jobs:
           s = p.read_text()
 
           old = '''\t// Lets do some recursion to register fundamental type parts.\n\tt := ut\n\tif lID, ok := r.logicalTypeIdentifiers[t]; ok {\n\t\tlt := r.logicalTypes[lID]\n\t\tr.addToMaps(lt.StorageType(), t)\n\t\treturn nil\n\t}\n'''
-          new = '''\t// Lets do some recursion to register fundamental type parts.\n\tt := ut\n\tif urn, ok := r.portableLogicalTypeIdentifiers[t]; ok {\n\t\tlt := r.portableLogicalTypes[urn]\n\t\tst, err := r.fieldTypeToReflectType(lt.Representation(), seen)\n\t\tif err != nil {\n\t\t\treturn errors.Wrapf(err, "unable to convert portable LogicalType[%v] representation for Go type %v", urn, t)\n\t\t}\n\t\tr.addToMaps(st, t)\n\t\treturn nil\n\t}\n\tif lID, ok := r.logicalTypeIdentifiers[t]; ok {\n\t\tlt := r.logicalTypes[lID]\n\t\tr.addToMaps(lt.StorageType(), t)\n\t\treturn nil\n\t}\n'''
+          new = '''\t// Lets do some recursion to register fundamental type parts.\n\tt := ut\n\tif urn, ok := r.portableLogicalTypeIdentifiers[t]; ok {\n\t\tlt := r.portableLogicalTypes[urn]\n\t\tst, err := r.fieldTypeToReflectType(lt.Representation(), nil)\n\t\tif err != nil {\n\t\t\treturn errors.Wrapf(err, "unable to convert portable LogicalType[%v] representation for Go type %v", urn, t)\n\t\t}\n\t\tr.addToMaps(st, t)\n\t\treturn nil\n\t}\n\tif lID, ok := r.logicalTypeIdentifiers[t]; ok {\n\t\tlt := r.logicalTypes[lID]\n\t\tr.addToMaps(lt.StorageType(), t)\n\t\treturn nil\n\t}\n'''
           if old not in s: raise SystemExit('registerType pattern not found')
           s = s.replace(old, new, 1)
 

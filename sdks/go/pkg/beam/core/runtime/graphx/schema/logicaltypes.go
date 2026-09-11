@@ -2,8 +2,8 @@
 // contributor license agreements.  See the NOTICE file distributed with
 // this work for additional information regarding copyright ownership.
 // The ASF licenses this file to you under the Apache License, Version 2.0
-// (the "License"); you may not use this file except in compliance with
-// the License.  You may obtain a copy of the License at
+// (the "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
 //
 //    http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -135,17 +135,20 @@ func (r *Registry) RegisterPortableLogicalType(lt PortableLogicalType) {
 	if lt.Representation() == nil {
 		panic(fmt.Sprintf("portable logical type %q has a nil representation", lt.URN()))
 	}
-	if _, err := r.reflectTypeToFieldType(lt.GoType()); err != nil {
-		// The Go type itself may be a logical type and therefore may not have a
-		// direct schema representation. Do not reject it here; representation is
-		// the authoritative wire type for portable logical types.
-		if lt.GoType().Kind() == reflect.Invalid {
-			panic(fmt.Sprintf("portable logical type %q has an invalid Go type", lt.URN()))
-		}
-	}
 	if _, exists := r.portableLogicalTypes[lt.URN()]; exists {
 		panic(fmt.Sprintf("portable logical type %q is already registered", lt.URN()))
 	}
+
+	// Keep the portable definition as the source of truth while also exposing
+	// it through the legacy maps. This lets the existing schema conversion path
+	// resolve a portable URN without changing the wire representation.
+	st, err := r.fieldTypeToReflectType(lt.Representation(), nil)
+	if err != nil {
+		panic(fmt.Sprintf("portable logical type %q has an invalid representation: %v", lt.URN(), err))
+	}
+	legacy := ToLogicalType(lt.URN(), lt.GoType(), st)
+	r.logicalTypeIdentifiers[lt.GoType()] = lt.URN()
+	r.logicalTypes[lt.URN()] = legacy
 	r.portableLogicalTypes[lt.URN()] = lt
 	r.portableLogicalTypeIdentifiers[lt.GoType()] = lt.URN()
 }

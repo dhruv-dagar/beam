@@ -1,7 +1,7 @@
 // Licensed to the Apache Software Foundation (ASF) under one or more
 // contributor license agreements.  See the NOTICE file distributed with
 // this work for additional information regarding copyright ownership.
-// The ASF licenses this file to You under the Apache License, Version 2.0
+// The ASF licenses this file to you under the Apache License, Version 2.0
 // (the "License"); you may not use this file except in compliance with
 // the License.  You may obtain a copy of the License at
 //
@@ -37,6 +37,13 @@ func RegisterLogicalType(lt LogicalType) {
 	defaultRegistry.RegisterLogicalType(lt)
 }
 
+// RegisterPortableLogicalType registers a logical type using its portable Beam
+// URN. Portable logical types are looked up by URN when decoding a schema
+// received from another SDK.
+func RegisterPortableLogicalType(lt PortableLogicalType) {
+	defaultRegistry.RegisterPortableLogicalType(lt)
+}
+
 // RegisterLogicalTypeProvider allows registration of providers for interface types.
 func RegisterLogicalTypeProvider(rt reflect.Type, ltp LogicalTypeProvider) {
 	defaultRegistry.RegisterLogicalTypeProvider(rt, ltp)
@@ -68,6 +75,11 @@ type Registry struct {
 	logicalTypes           map[string]LogicalType
 	logicalTypeIdentifiers map[reflect.Type]string
 
+	// Portable logical types are keyed by their Beam URN. The Go type map allows
+	// schema inference to use the portable definition when starting from a Go type.
+	portableLogicalTypes           map[string]PortableLogicalType
+	portableLogicalTypeIdentifiers map[reflect.Type]string
+
 	// toReconcile contains a list of types that have been registered
 	// but not yet processed. Registration actually happens on first
 	// call to ToType or FromType or once Initialize is called on beam.Init.
@@ -84,6 +96,9 @@ func NewRegistry() *Registry {
 		logicalTypes:           map[string]LogicalType{},
 		logicalTypeIdentifiers: map[reflect.Type]string{},
 		logicalTypeProviders:   map[reflect.Type]LogicalTypeProvider{},
+
+		portableLogicalTypes:           map[string]PortableLogicalType{},
+		portableLogicalTypeIdentifiers: map[reflect.Type]string{},
 	}
 }
 
@@ -101,6 +116,46 @@ func (r *Registry) RegisterLogicalType(lt LogicalType) {
 	// TODO add duplication checks.
 	r.logicalTypeIdentifiers[lt.GoType()] = lt.ID()
 	r.logicalTypes[lt.ID()] = lt
+}
+
+// RegisterPortableLogicalType registers a portable logical type and validates
+// its representation. The argument type and value are carried through the
+// Runner API schema unchanged, so parameterized logical types can preserve
+// their portable metadata.
+func (r *Registry) RegisterPortableLogicalType(lt PortableLogicalType) {
+	if lt == nil {
+		panic("cannot register a nil portable logical type")
+	}
+	if lt.URN() == "" {
+		panic("cannot register a portable logical type with an empty URN")
+	}
+	if lt.GoType() == nil {
+		panic(fmt.Sprintf("portable logical type %q has a nil Go type", lt.URN()))
+	}
+	if lt.Representation() == nil {
+		panic(fmt.Sprintf("portable logical type %q has a nil representation", lt.URN()))
+	}
+	if _, err := r.reflectTypeToFieldType(lt.GoType()); err != nil {
+		// The Go type itself may be a logical type and therefore may not have a
+		// direct schema representation. Do not reject it here; representation is
+		// the authoritative wire type for portable logical types.
+		if lt.GoType().Kind() == reflect.Invalid {
+			panic(fmt.Sprintf("portable logical type %q has an invalid Go type", lt.URN()))
+		}
+	}
+	if _, exists := r.portableLogicalTypes[lt.URN()]; exists {
+		panic(fmt.Sprintf("portable logical type %q is already registered", lt.URN()))
+	}
+	r.portableLogicalTypes[lt.URN()] = lt
+	r.portableLogicalTypeIdentifiers[lt.GoType()] = lt.URN()
+}
+
+// PortableLogicalType returns the registered portable logical type for a URN.
+func (r *Registry) PortableLogicalType(urn string) (PortableLogicalType, bool) {
+	r.rwmu.RLock()
+	defer r.rwmu.RUnlock()
+	lt, ok := r.portableLogicalTypes[urn]
+	return lt, ok
 }
 
 // RegisterLogicalTypeProvider allows registration of providers for interface types.

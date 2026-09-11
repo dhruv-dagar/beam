@@ -218,6 +218,15 @@ func (r *Registry) registerType(ut reflect.Type, seen map[reflect.Type]struct{})
 
 	// Lets do some recursion to register fundamental type parts.
 	t := ut
+	if urn, ok := r.portableLogicalTypeIdentifiers[t]; ok {
+		lt := r.portableLogicalTypes[urn]
+		st, err := r.fieldTypeToReflectType(lt.Representation(), nil)
+		if err != nil {
+			return errors.Wrapf(err, "unable to convert portable LogicalType[%v] representation for Go type %v", urn, t)
+		}
+		r.addToMaps(st, t)
+		return nil
+	}
 	if lID, ok := r.logicalTypeIdentifiers[t]; ok {
 		lt := r.logicalTypes[lID]
 		r.addToMaps(lt.StorageType(), t)
@@ -328,7 +337,12 @@ func (r *Registry) FromType(ot reflect.Type) (*pipepb.Schema, error) {
 }
 
 func (r *Registry) logicalTypeToFieldType(t reflect.Type) (*pipepb.FieldType, string, error) {
-	// Check if a logical type was registered that matches this struct type directly
+	// Portable logical types are identified by their Beam URN.
+	if urn, ok := r.portableLogicalTypeIdentifiers[t]; ok {
+		lt := r.portableLogicalTypes[urn]
+		return proto.Clone(lt.Representation()).(*pipepb.FieldType), urn, nil
+	}
+	// Check if a legacy logical type was registered that matches this struct type directly
 	// and if so, extract the schema from it for use.
 	if lID, ok := r.logicalTypeIdentifiers[t]; ok {
 		lt := r.logicalTypes[lID]
@@ -571,14 +585,20 @@ func (r *Registry) reflectTypeToFieldType(ot reflect.Type) (*pipepb.FieldType, e
 		return nil, err
 	}
 	if ftype != nil {
+		logical := &pipepb.LogicalType{
+			Urn:            lID,
+			Representation: ftype,
+		}
+		if lt, ok := r.portableLogicalTypes[lID]; ok {
+			if lt.ArgumentType() != nil {
+				logical.ArgumentType = proto.Clone(lt.ArgumentType()).(*pipepb.FieldType)
+			}
+			if lt.Argument() != nil {
+				logical.Argument = proto.Clone(lt.Argument()).(*pipepb.FieldValue)
+			}
+		}
 		return &pipepb.FieldType{
-			TypeInfo: &pipepb.FieldType_LogicalType{
-				LogicalType: &pipepb.LogicalType{
-					Urn:            lID,
-					Representation: ftype,
-					// TODO(BEAM-9615): Handle type Arguments.
-				},
-			},
+			TypeInfo: &pipepb.FieldType_LogicalType{LogicalType: logical},
 		}, nil
 	}
 
@@ -794,11 +814,13 @@ func (r *Registry) fieldTypeToReflectType(sft *pipepb.FieldType, opts []*pipepb.
 	case *pipepb.FieldType_LogicalType:
 		lst := sft.GetLogicalType()
 		identifier := lst.GetUrn()
-		lt, ok := r.logicalTypes[identifier]
-		if !ok {
+		if lt, ok := r.portableLogicalTypes[identifier]; ok {
+			t = lt.GoType()
+		} else if lt, ok := r.logicalTypes[identifier]; ok {
+			t = lt.GoType()
+		} else {
 			return nil, errors.Errorf("unknown logical type: %v", identifier)
 		}
-		t = lt.GoType()
 
 	default:
 		return nil, errors.Errorf("unknown fieldtype: %T", sft.GetTypeInfo())

@@ -1,9 +1,9 @@
 // Licensed to the Apache Software Foundation (ASF) under one or more
 // contributor license agreements.  See the NOTICE file distributed with
 // this work for additional information regarding copyright ownership.
-// The ASF licenses this file to You under the Apache License, Version 2.0
-// (the "License"); you may not use this file except in compliance with
-// the License.  You may obtain a copy of the License at
+// The ASF licenses this file to you under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
 //
 //    http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -32,4 +32,15 @@ type PortableLogicalType interface {
 	Representation() *pipepb.FieldType
 	ArgumentType() *pipepb.FieldType
 	Argument() *pipepb.FieldValue
+}
+
+// PortableLogicalTypeConverter is an optional extension implemented by logical
+// types that need to translate values between their language and representation
+// types. Keeping conversion separate from PortableLogicalType preserves a small
+// metadata-only interface for logical types that are handled by an existing
+// coder/provider while allowing new implementations to opt into automatic
+// conversion.
+type PortableLogicalTypeConverter interface {
+	ToStorageValue(reflect.Value) (reflect.Value, error)
+	ToGoValue(reflect.Value) (reflect.Value, error)
 }

@@ -87,8 +87,18 @@ func TestPortableLogicalTypeRegistry(t *testing.T) {
 		t.Fatalf("FromType() failed: %v", err)
 	}
 	field := schema.GetFields()[0]
-	if gotURN := field.GetType().GetLogicalType().GetUrn(); gotURN != lt.URN() {
+	logical := field.GetType().GetLogicalType()
+	if gotURN := logical.GetUrn(); gotURN != lt.URN() {
 		t.Fatalf("logical type URN = %q, want %q", gotURN, lt.URN())
+	}
+	if !reflect.DeepEqual(logical.GetRepresentation(), lt.Representation()) {
+		t.Fatalf("logical representation was not preserved: got %v, want %v", logical.GetRepresentation(), lt.Representation())
+	}
+	if !reflect.DeepEqual(logical.GetArgumentType(), lt.ArgumentType()) {
+		t.Fatalf("logical argument type was not preserved: got %v, want %v", logical.GetArgumentType(), lt.ArgumentType())
+	}
+	if !reflect.DeepEqual(logical.GetArgument(), lt.Argument()) {
+		t.Fatalf("logical argument was not preserved: got %v, want %v", logical.GetArgument(), lt.Argument())
 	}
 
 	gotType, err := r.ToType(schema)

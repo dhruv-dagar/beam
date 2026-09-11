@@ -21,15 +21,29 @@ import (
 	pipepb "github.com/apache/beam/sdks/v2/go/pkg/beam/model/pipeline_v1"
 )
 
+// Standard portable logical type URNs defined by the Beam portability schema.
+const (
+	PythonCallableLogicalTypeURN = "beam:logical_type:python_callable:v1"
+	MicrosInstantLogicalTypeURN  = "beam:logical_type:micros_instant:v1"
+	MillisInstantLogicalTypeURN  = "beam:logical_type:millis_instant:v1"
+	DecimalLogicalTypeURN        = "beam:logical_type:decimal:v1"
+	FixedBytesLogicalTypeURN     = "beam:logical_type:fixed_bytes:v1"
+	VarBytesLogicalTypeURN       = "beam:logical_type:var_bytes:v1"
+	FixedCharLogicalTypeURN      = "beam:logical_type:fixed_char:v1"
+	VarCharLogicalTypeURN        = "beam:logical_type:var_char:v1"
+)
+
 // PortableLogicalType describes a Beam logical type using its portable URN.
 //
 // Unlike the legacy Go LogicalType, a portable logical type is identified by
-// the Beam URN that appears on the wire. Representation and argument metadata
-// are supplied as pipeline schema protos so they can be preserved exactly.
+// the Beam URN that appears on the wire. Representation, payload, and argument
+// metadata are supplied as pipeline schema protos so they can be preserved
+// exactly.
 type PortableLogicalType interface {
 	URN() string
 	GoType() reflect.Type
 	Representation() *pipepb.FieldType
+	Payload() []byte
 	ArgumentType() *pipepb.FieldType
 	Argument() *pipepb.FieldValue
 }

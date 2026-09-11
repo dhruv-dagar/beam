@@ -1,0 +1,57 @@
+name: Apply portable logical type schema integration
+
+on:
+  push:
+    branches: [fix-go-portable-logical-types]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Patch schema translation
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('sdks/go/pkg/beam/core/runtime/graphx/schema/schema.go')
+          s = p.read_text()
+
+          old = '''\t// Lets do some recursion to register fundamental type parts.\n\tt := ut\n\tif lID, ok := r.logicalTypeIdentifiers[t]; ok {\n\t\tlt := r.logicalTypes[lID]\n\t\tr.addToMaps(lt.StorageType(), t)\n\t\treturn nil\n\t}\n'''
+          new = '''\t// Lets do some recursion to register fundamental type parts.\n\tt := ut\n\tif urn, ok := r.portableLogicalTypeIdentifiers[t]; ok {\n\t\tlt := r.portableLogicalTypes[urn]\n\t\tst, err := r.fieldTypeToReflectType(lt.Representation(), seen)\n\t\tif err != nil {\n\t\t\treturn errors.Wrapf(err, "unable to convert portable LogicalType[%v] representation for Go type %v", urn, t)\n\t\t}\n\t\tr.addToMaps(st, t)\n\t\treturn nil\n\t}\n\tif lID, ok := r.logicalTypeIdentifiers[t]; ok {\n\t\tlt := r.logicalTypes[lID]\n\t\tr.addToMaps(lt.StorageType(), t)\n\t\treturn nil\n\t}\n'''
+          if old not in s: raise SystemExit('registerType pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = '''func (r *Registry) logicalTypeToFieldType(t reflect.Type) (*pipepb.FieldType, string, error) {\n\t// Check if a logical type was registered that matches this struct type directly\n\t// and if so, extract the schema from it for use.\n\tif lID, ok := r.logicalTypeIdentifiers[t]; ok {'''
+          new = '''func (r *Registry) logicalTypeToFieldType(t reflect.Type) (*pipepb.FieldType, string, error) {\n\t// Portable logical types are identified by their Beam URN.\n\tif urn, ok := r.portableLogicalTypeIdentifiers[t]; ok {\n\t\tlt := r.portableLogicalTypes[urn]\n\t\treturn proto.Clone(lt.Representation()).(*pipepb.FieldType), urn, nil\n\t}\n\t// Check if a legacy logical type was registered that matches this struct type directly\n\t// and if so, extract the schema from it for use.\n\tif lID, ok := r.logicalTypeIdentifiers[t]; ok {'''
+          if old not in s: raise SystemExit('logicalTypeToFieldType pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\tif ftype != nil {\n\t\treturn &pipepb.FieldType{\n\t\t\tTypeInfo: &pipepb.FieldType_LogicalType{\n\t\t\t\tLogicalType: &pipepb.LogicalType{\n\t\t\t\t\tUrn:            lID,\n\t\t\t\t\tRepresentation: ftype,\n\t\t\t\t\t// TODO(BEAM-9615): Handle type Arguments.\n\t\t\t\t},\n\t\t\t},\n\t\t}, nil\n\t}\n'''
+          new = '''\tif ftype != nil {\n\t\tlogical := &pipepb.LogicalType{\n\t\t\tUrn:            lID,\n\t\t\tRepresentation: ftype,\n\t\t}\n\t\tif lt, ok := r.portableLogicalTypes[lID]; ok {\n\t\t\tif lt.ArgumentType() != nil {\n\t\t\t\tlogical.ArgumentType = proto.Clone(lt.ArgumentType()).(*pipepb.FieldType)\n\t\t\t}\n\t\t\tif lt.Argument() != nil {\n\t\t\t\tlogical.Argument = proto.Clone(lt.Argument()).(*pipepb.FieldValue)\n\t\t\t}\n\t\t}\n\t\treturn &pipepb.FieldType{\n\t\t\tTypeInfo: &pipepb.FieldType_LogicalType{LogicalType: logical},\n\t\t}, nil\n\t}\n'''
+          if old not in s: raise SystemExit('serialization pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\tcase *pipepb.FieldType_LogicalType:\n\t\tlst := sft.GetLogicalType()\n\t\tidentifier := lst.GetUrn()\n\t\tlt, ok := r.logicalTypes[identifier]\n\t\tif !ok {\n\t\t\treturn nil, errors.Errorf("unknown logical type: %v", identifier)\n\t\t}\n\t\tt = lt.GoType()\n'''
+          new = '''\tcase *pipepb.FieldType_LogicalType:\n\t\tlst := sft.GetLogicalType()\n\t\tidentifier := lst.GetUrn()\n\t\tif lt, ok := r.portableLogicalTypes[identifier]; ok {\n\t\t\tt = lt.GoType()\n\t\t} else if lt, ok := r.logicalTypes[identifier]; ok {\n\t\t\tt = lt.GoType()\n\t\t} else {\n\t\t\treturn nil, errors.Errorf("unknown logical type: %v", identifier)\n\t\t}\n'''
+          if old not in s: raise SystemExit('deserialization pattern not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+      - name: Format and test schema package
+        run: |
+          cd sdks/go/pkg/beam
+          gofmt -w core/runtime/graphx/schema/schema.go
+          go test ./core/runtime/graphx/schema
+      - name: Commit schema integration
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add sdks/go/pkg/beam/core/runtime/graphx/schema/schema.go
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Add portable logical type schema translation'
+          git push

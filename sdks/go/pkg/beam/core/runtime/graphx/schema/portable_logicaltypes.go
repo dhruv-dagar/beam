@@ -36,14 +36,12 @@ const (
 // PortableLogicalType describes a Beam logical type using its portable URN.
 //
 // Unlike the legacy Go LogicalType, a portable logical type is identified by
-// the Beam URN that appears on the wire. Representation, payload, and argument
-// metadata are supplied as pipeline schema protos so they can be preserved
-// exactly.
+// the Beam URN that appears on the wire. Representation and argument metadata
+// are supplied as pipeline schema protos so they can be preserved exactly.
 type PortableLogicalType interface {
 	URN() string
 	GoType() reflect.Type
 	Representation() *pipepb.FieldType
-	Payload() []byte
 	ArgumentType() *pipepb.FieldType
 	Argument() *pipepb.FieldValue
 }

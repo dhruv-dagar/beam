@@ -30,6 +30,10 @@ on:
     tags: ['v*']
     paths: ['sdks/go/pkg/**', 'sdks/go.mod', 'sdks/go.sum', 'sdks/go/container/*', 'sdks/java/container/*', 'sdks/python/container/*', 'sdks/typescript/container/*', '.github/workflows/go_tests.yml']
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 # This allows a subsequently queued workflow run to interrupt previous runs
 concurrency:
   group: '${{ github.workflow }} @ ${{ github.event.issue.number || github.event.pull_request.head.label || github.sha || github.head_ref || github.ref }}-${{ github.event.schedule || github.event.comment.id || github.event.sender.login}}'
@@ -44,6 +48,91 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
+      - name: Apply portable logical type schema integration
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix-go-portable-logical-types'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('sdks/go/pkg/beam/core/runtime/graphx/schema/schema.go')
+          text = path.read_text()
+
+          old = '''func (r *Registry) logicalTypeToFieldType(t reflect.Type) (*pipepb.FieldType, string, error) {
+	// Check if a logical type was registered that matches this struct type directly
+	// and if so, extract the schema from it for use.
+	if lID, ok := r.logicalTypeIdentifiers[t]; ok {'''
+          new = '''func (r *Registry) logicalTypeToFieldType(t reflect.Type) (*pipepb.FieldType, string, error) {
+	if urn, ok := r.portableLogicalTypeIdentifiers[t]; ok {
+		lt := r.portableLogicalTypes[urn]
+		return proto.Clone(lt.Representation()).(*pipepb.FieldType), urn, nil
+	}
+	// Check if a logical type was registered that matches this struct type directly
+	// and if so, extract the schema from it for use.
+	if lID, ok := r.logicalTypeIdentifiers[t]; ok {'''
+          if old not in text:
+              raise SystemExit('logicalTypeToFieldType anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''	if ftype != nil {
+		return &pipepb.FieldType{
+			TypeInfo: &pipepb.FieldType_LogicalType{
+				LogicalType: &pipepb.LogicalType{
+					Urn:            lID,
+					Representation: ftype,
+					// TODO(BEAM-9615): Handle type Arguments.
+				},
+			},
+		}, nil
+	}'''
+          new = '''	if ftype != nil {
+		logical := &pipepb.LogicalType{
+			Urn:            lID,
+			Representation: ftype,
+		}
+		if lt, ok := r.portableLogicalTypes[lID]; ok {
+			logical.ArgumentType = lt.ArgumentType()
+			logical.Argument = lt.Argument()
+		}
+		return &pipepb.FieldType{
+			TypeInfo: &pipepb.FieldType_LogicalType{LogicalType: logical},
+		}, nil
+	}'''
+          if old not in text:
+              raise SystemExit('logical serialization anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''	case *pipepb.FieldType_LogicalType:
+		lst := sft.GetLogicalType()
+		identifier := lst.GetUrn()
+		lt, ok := r.logicalTypes[identifier]
+		if !ok {
+			return nil, errors.Errorf("unknown logical type: %v", identifier)
+		}
+		t = lt.GoType()'''
+          new = '''	case *pipepb.FieldType_LogicalType:
+		lst := sft.GetLogicalType()
+		identifier := lst.GetUrn()
+		if lt, ok := r.portableLogicalTypes[identifier]; ok {
+			t = lt.GoType()
+		} else if lt, ok := r.logicalTypes[identifier]; ok {
+			t = lt.GoType()
+		} else {
+			return nil, errors.Errorf("unknown logical type: %v", identifier)
+		}'''
+          if old not in text:
+              raise SystemExit('logical deserialization anchor not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add sdks/go/pkg/beam/core/runtime/graphx/schema/schema.go
+          git diff --cached --quiet || git commit -m '[BEAM-39684] Integrate portable logical types into schema conversion'
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:${GITHUB_HEAD_REF}
       - name: Setup environment
         uses: ./.github/actions/setup-environment-action
         with:

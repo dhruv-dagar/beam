@@ -121,7 +121,7 @@ func (r *Registry) RegisterLogicalType(lt LogicalType) {
 // RegisterPortableLogicalType registers a portable logical type and validates
 // its representation. The argument type and value are carried through the
 // Runner API schema unchanged, so parameterized logical types can preserve
-// their portable metadata.
+// their portable metadata at the registration boundary.
 func (r *Registry) RegisterPortableLogicalType(lt PortableLogicalType) {
 	if lt == nil {
 		panic("cannot register a nil portable logical type")
@@ -139,13 +139,16 @@ func (r *Registry) RegisterPortableLogicalType(lt PortableLogicalType) {
 		panic(fmt.Sprintf("portable logical type %q is already registered", lt.URN()))
 	}
 
-	// Keep the portable definition as the source of truth while also exposing
-	// it through the legacy maps. This lets the existing schema conversion path
-	// resolve a portable URN without changing the wire representation.
+	// Validate that the representation can be translated to a Go storage type.
 	st, err := r.fieldTypeToReflectType(lt.Representation(), nil)
 	if err != nil {
 		panic(fmt.Sprintf("portable logical type %q has an invalid representation: %v", lt.URN(), err))
 	}
+
+	// Keep the portable definition as the source of truth while also exposing
+	// it through the legacy maps. The existing schema conversion path keys
+	// logical types by identifier, so this bridge makes portable URNs usable
+	// without changing the wire-level logical type representation.
 	legacy := ToLogicalType(lt.URN(), lt.GoType(), st)
 	r.logicalTypeIdentifiers[lt.GoType()] = lt.URN()
 	r.logicalTypes[lt.URN()] = legacy
@@ -157,6 +160,19 @@ func (r *Registry) RegisterPortableLogicalType(lt PortableLogicalType) {
 func (r *Registry) PortableLogicalType(urn string) (PortableLogicalType, bool) {
 	r.rwmu.RLock()
 	defer r.rwmu.RUnlock()
+	lt, ok := r.portableLogicalTypes[urn]
+	return lt, ok
+}
+
+// PortableLogicalTypeForType returns the portable logical type registered for
+// the supplied Go type.
+func (r *Registry) PortableLogicalTypeForType(t reflect.Type) (PortableLogicalType, bool) {
+	r.rwmu.RLock()
+	defer r.rwmu.RUnlock()
+	urn, ok := r.portableLogicalTypeIdentifiers[t]
+	if !ok {
+		return nil, false
+	}
 	lt, ok := r.portableLogicalTypes[urn]
 	return lt, ok
 }
@@ -173,6 +189,10 @@ func (r *Registry) RegisterLogicalTypeProvider(rt reflect.Type, ltp LogicalTypeP
 	r.logicalTypeInterfaces = append(r.logicalTypeInterfaces, rt)
 }
 
+// LogicalValueConverter converts a language value to or from its storage value.
+// The returned reflect.Value must have the type expected by StorageType or GoType.
+type LogicalValueConverter func(reflect.Value) (reflect.Value, error)
+
 // LogicalType is a mapping between custom Go types, and their schema equivalent storage types.
 //
 // A LogicalType is a way to define a type that can be stored in a schema field
@@ -185,6 +205,8 @@ type LogicalType struct {
 	identifier          string
 	goT, storageT, argT reflect.Type
 	argV                reflect.Value
+	toStorage           LogicalValueConverter
+	toGo                LogicalValueConverter
 }
 
 // ID is a unique identifier for the logical type.
@@ -215,9 +237,41 @@ func (l *LogicalType) StorageType() reflect.Type {
 	return l.storageT
 }
 
-// ToLogicalType creates a LogicalType, indicating that there's a conversion from one to the other.
+// ToStorageValue converts a logical Go value to its storage representation.
+// It returns an error when the logical type has no converter registered.
+func (l *LogicalType) ToStorageValue(v reflect.Value) (reflect.Value, error) {
+	if l.toStorage == nil {
+		return reflect.Value{}, fmt.Errorf("logical type %q has no Go-to-storage converter", l.ID())
+	}
+	return l.toStorage(v)
+}
+
+// ToGoValue converts a storage representation to its logical Go value.
+// It returns an error when the logical type has no converter registered.
+func (l *LogicalType) ToGoValue(v reflect.Value) (reflect.Value, error) {
+	if l.toGo == nil {
+		return reflect.Value{}, fmt.Errorf("logical type %q has no storage-to-Go converter", l.ID())
+	}
+	return l.toGo(v)
+}
+
+// ToLogicalType creates a LogicalType without value conversion hooks.
 func ToLogicalType(identifier string, goType, storageType reflect.Type) LogicalType {
 	return LogicalType{identifier: identifier, goT: goType, storageT: storageType}
+}
+
+// ToLogicalTypeWithConverters creates a LogicalType with bidirectional value
+// conversion hooks. The hooks are intentionally expressed in terms of
+// reflect.Value so the schema package does not impose a concrete storage value
+// representation on callers.
+func ToLogicalTypeWithConverters(identifier string, goType, storageType reflect.Type, toStorage, toGo LogicalValueConverter) LogicalType {
+	return LogicalType{
+		identifier: identifier,
+		goT:        goType,
+		storageT:   storageType,
+		toStorage:  toStorage,
+		toGo:       toGo,
+	}
 }
 
 func preRegLogicalTypes(r *Registry) {
